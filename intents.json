@@ -1,0 +1,76 @@
+{
+    "interactionModel": {
+      "languageModel": {
+        "invocationName": "victoria",
+        "intents": [
+          {
+            "name": "LaunchRequestIntent",
+            "samples": []
+          },
+          {
+            "name": "InformeActualIntent",
+            "slots": [],
+            "samples": [
+              "informe actual",
+              "estado actual",
+              "cómo está todo ahora",
+              "resumen actual",
+              "últimos minutos",
+              "estado en los últimos minutos",
+              "qué pasó ahora"
+            ]
+          },
+          {
+            "name": "InformeTresIntent",
+            "slots": [],
+            "samples": [
+              "informe tres",
+              "resumen de tres horas",
+              "últimas tres horas",
+              "estado de hace tres horas",
+              "resumen de las últimas tres horas",
+              "qué pasó en las últimas tres horas"
+            ]
+          },
+          {
+            "name": "InformeDiaIntent",
+            "slots": [],
+            "samples": [
+              "informe del día",
+              "resumen del día",
+              "estado del día",
+              "qué pasó hoy",
+              "cómo estuvo el día",
+              "información del día completo"
+            ]
+          },
+          {
+            "name": "AMAZON.FallbackIntent",
+            "samples": [
+              "no sé",
+              "qué puedo decir",
+              "ayuda",
+              "no entiendo"
+            ]
+          },
+          {
+            "name": "AMAZON.HelpIntent",
+            "samples": [
+              "ayuda",
+              "qué puedo decir",
+              "cómo uso esta skill"
+            ]
+          },
+          {
+            "name": "AMAZON.CancelIntent",
+            "samples": []
+          },
+          {
+            "name": "AMAZON.StopIntent",
+            "samples": []
+          }
+        ],
+        "types": []
+      }
+    }
+  }

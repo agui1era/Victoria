@@ -1,7 +1,4 @@
-sounddevice==0.5.1
-numpy==1.26.4
-vosk==0.3.44
-openai==1.50.2
-gTTS==2.5.1
-simpleaudio==1.0.4
-python-dotenv==1.0.1
+flask
+pymongo
+python-dotenv
+requests
