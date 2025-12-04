@@ -279,7 +279,7 @@ def main():
             print("❌ ERROR GENERAL:", e)
 
         print("⏳ Durmiendo 5 minutos...\n")
-        time.sleep(300)
+        time.sleep(600)
 
 
 if __name__ == "__main__":

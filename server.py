@@ -73,5 +73,5 @@ def informe_ayer():
 
 # ===== MAIN =====
 if __name__ == "__main__":
-    print("Victoria Server (solo lectura) en puerto 8080 🦊🔥")
-    app.run(host="0.0.0.0", port=8080)
+    print("Victoria Server (solo lectura) en puerto 8888 🦊🔥")
+    app.run(host="0.0.0.0", port=8888)
