@@ -21,6 +21,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB = os.getenv("MONGO_DB_NAME")
 EVENTS_COLL = os.getenv("MONGO_COLL_NAME")
 CACHE_COLL = "victoria_cache"
+CACHE_HISTORY_COLL = "victoria_cache_history"
 
 # Modelos por tipo
 MODEL_ACTUAL = os.getenv("MODEL_ACTUAL", "gpt-4o-mini")
@@ -32,6 +33,7 @@ mongo = MongoClient(MONGO_URI)
 db = mongo[MONGO_DB]
 col_events = db[EVENTS_COLL]
 col_cache  = db[CACHE_COLL]
+col_cache_history = db[CACHE_HISTORY_COLL]
 
 # =======================
 # HELPERS
@@ -105,6 +107,27 @@ def read_events(minutes):
     return eventos
 
 
+def read_last_event():
+    """
+    Obtiene el último registro crudo de la colección general.
+    """
+    doc = col_events.find().sort("timestamp", -1).limit(1)
+    ultimo = next(doc, None)
+
+    if not ultimo:
+        return None
+
+    ts = ultimo.get("timestamp")
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+    if isinstance(ts, datetime):
+        ultimo["timestamp"] = ts.isoformat()
+
+    ultimo.pop("_id", None)
+    return ultimo
+
+
 def read_events_range(start, end):
     docs = col_events.find({
         "timestamp": {
@@ -165,6 +188,27 @@ def guardar_cache(tipo, texto, events_hash):
     )
 
 
+def guardar_historial(tipo, texto, events_hash, event_timestamp=None):
+    """
+    Guarda una entrada histórica con timestamp de snapshot. Si se conoce el
+    timestamp original del evento, se almacena aparte. Es best-effort para no
+    alterar la lógica principal.
+    """
+    if tipo not in {"tres", "dia"}:
+        return
+
+    try:
+        col_cache_history.insert_one({
+            "tipo": tipo,
+            "texto": texto,
+            "events_hash": events_hash,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_timestamp": event_timestamp
+        })
+    except Exception as e:
+        print(f"⚠️  No se pudo guardar historial de {tipo}: {e}")
+
+
 # =======================
 # LLM
 # =======================
@@ -219,7 +263,38 @@ def procesar_si_cambia(tipo, eventos, modelo):
     print(f"🟣 {tipo.upper()} actualizado → recalculando con {modelo}...")
     texto = analizar(eventos, modelo)
     guardar_cache(tipo, texto, events_hash)
+    snapshot_ts = datetime.now(timezone.utc).isoformat()
+    guardar_historial(tipo, texto, events_hash, snapshot_ts)
     print(f"🟢 {tipo.upper()} OK.")
+
+
+def procesar_actual_desde_general():
+    """
+    El informe ACTUAL ahora toma el último registro crudo de la colección
+    general, sin recalcular categorías ni resúmenes.
+    """
+    ultimo = read_last_event()
+
+    if not ultimo:
+        print("🔴 ACTUAL sin eventos en la colección general → skip.")
+        return
+
+    texto = ultimo.get("text") or ultimo.get("msg") or ultimo.get("mensaje")
+    if not texto:
+        texto = json.dumps(ultimo, ensure_ascii=False)
+
+    events_hash = hash(json.dumps(ultimo, ensure_ascii=False, default=str))
+    cache_prev = leer_cache("actual")
+
+    if cache_prev and cache_prev.get("events_hash") == events_hash:
+        print("🔵 ACTUAL sin cambios → skip.")
+        return
+
+    print("🟣 ACTUAL se toma del último registro en la colección general.")
+    texto_limpio = limpiar_para_alexa(texto)
+
+    guardar_cache("actual", texto_limpio, events_hash)
+    print("🟢 ACTUAL OK.")
 
 
 # =======================
@@ -236,7 +311,7 @@ def main():
             print("=========================")
 
             # 1) Actual (5 min)
-            procesar_si_cambia("actual", group_similar(read_events(5)), MODEL_ACTUAL)
+            procesar_actual_desde_general()
 
             # 2) Tres horas
             procesar_si_cambia("tres", group_similar(read_events(180)), MODEL_TRES)
