@@ -194,9 +194,6 @@ def guardar_historial(tipo, texto, events_hash, event_timestamp=None):
     timestamp original del evento, se almacena aparte. Es best-effort para no
     alterar la lógica principal.
     """
-    if tipo not in {"tres", "dia"}:
-        return
-
     try:
         col_cache_history.insert_one({
             "tipo": tipo,
@@ -294,6 +291,7 @@ def procesar_actual_desde_general():
     texto_limpio = limpiar_para_alexa(texto)
 
     guardar_cache("actual", texto_limpio, events_hash)
+    guardar_historial("actual", texto_limpio, events_hash, ultimo.get("timestamp"))
     print("🟢 ACTUAL OK.")
 
 
@@ -347,6 +345,7 @@ def main():
 
                 texto_ayer = analizar(eventos_ayer, MODEL_AYER)
                 guardar_cache("ayer", texto_ayer, hash_ayer)
+                guardar_historial("ayer", texto_ayer, hash_ayer, start.isoformat())
 
                 print("🟢 AYER listo.")
 
