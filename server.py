@@ -7,14 +7,15 @@ load_dotenv()
 app = Flask(__name__)
 
 # ===== CONFIG =====
+# ===== CONFIG =====
 MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB = os.getenv("MONGO_DB_NAME")
+MONGO_DB_CACHE = os.getenv("MONGO_DB_CACHE", "victoria")
 CACHE_COLL = "victoria_cache"
 APIKEY = os.getenv("VICTORIA_APIKEY")
 
 # ===== Mongo =====
 mongo = MongoClient(MONGO_URI)
-col_cache = mongo[MONGO_DB][CACHE_COLL]
+col_cache = mongo[MONGO_DB_CACHE][CACHE_COLL]
 
 
 # ===== Sanitizador para Alexa =====
