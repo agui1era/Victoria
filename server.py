@@ -8,26 +8,15 @@ from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__)
 
-# Enable CORS for all routes
-CORS(app, resources={r"/*": {"origins": "*"}})
-
-# ======================
-# CONFIG
-# ======================
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-MONGO_DB = os.getenv("MONGO_DB_NAME", "victoria")
-
-MONGO_DAILY_COLLECTION_NAME = "victoria_daily_reports"
-
-API_KEY = os.getenv("VICTORIA_APIKEY", "aOhSfdBLPFEXC2HJlXPpT8AQ5wKVc")
-
-# ======================
-# MONGO
-# ======================
+# ===== CONFIG =====
+# ===== CONFIG =====
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB_CACHE = os.getenv("MONGO_DB_CACHE", "victoria")
+CACHE_COLL = "victoria_cache"
+APIKEY = os.getenv("VICTORIA_APIKEY")
 
 mongo = MongoClient(MONGO_URI)
-db = mongo[MONGO_DB]
-daily_col = db[MONGO_DAILY_COLLECTION_NAME]
+col_cache = mongo[MONGO_DB_CACHE][CACHE_COLL]
 
 # ======================
 # HELPERS

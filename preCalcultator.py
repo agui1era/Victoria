@@ -33,21 +33,26 @@ MONGO_HISTORY_COLLECTION = "victoria_cache_history"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# Interval
-CHECK_INTERVAL = int(os.getenv("CALC_INTERVAL_SECONDS", "60"))
-BLOCK_DURATION_MINUTES = int(os.getenv("BLOCK_DURATION_MINUTES", "180")) # Default 3 hours
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB_EVENTS = os.getenv("MONGO_DB_EVENTS", "omniguard")
+MONGO_DB_CACHE = os.getenv("MONGO_DB_CACHE", "victoria")
+EVENTS_COLL = os.getenv("MONGO_COLL_NAME", "events")
+CACHE_COLL = "victoria_cache"
 
-# Analysis Prompt
-PROMPT_ANALYSIS = """
-Analiza los siguientes eventos del sistema y genera un reporte conciso.
-Si hay errores criticos, destacalos.
-Si todo esta normal, indicalo brevemente.
-Responde en formato JSON: {"score": <0-10 de gravedad>, "text": "<resumen>"}
-"""
 
-# ======================
-# MONGO CONNECTION
-# ======================
+# Modelos por tipo
+MODEL_ACTUAL = os.getenv("MODEL_ACTUAL", "gpt-4o-mini")
+MODEL_TRES   = os.getenv("MODEL_TRES",   "gpt-4o-mini")
+MODEL_DIA    = os.getenv("MODEL_DIA",    "gpt-4o-mini")
+
+
+mongo = MongoClient(MONGO_URI)
+db_events = mongo[MONGO_DB_EVENTS]
+db_cache  = mongo[MONGO_DB_CACHE]
+
+col_events = db_events[EVENTS_COLL]
+col_cache  = db_cache[CACHE_COLL]
+
 
 try:
     mongo = MongoClient(MONGO_URI)
@@ -78,6 +83,11 @@ def with_retries(request_fn, max_attempts=3, base_delay=1.0, max_delay=30.0):
             logger.warning(f"Retry {attempt}/{max_attempts} in {sleep_s:.2f}s...")
             time.sleep(sleep_s)
 
+def log(msg):
+    now = datetime.now()
+    ts = now.strftime("[%H:%M:%S]")
+    print(f"{ts} {msg}")
+
 def normalize_text(s):
     if not isinstance(s, str):
         return ""
@@ -94,33 +104,153 @@ def group_similar_events(events, threshold=0.95):
         return []
     groups = []
     for evt in events:
-        text = evt.get("text", "") or evt.get("msg", "") or ""
-        norm = normalize_text(text)
-        matched = False
-        for g in groups:
-            if similarity(g["norm"], norm) >= threshold:
-                g["count"] += 1
-                g["timestamp_last"] = evt["timestamp"]
-                matched = True
-                break
-        if not matched:
-            groups.append({
-                "sample_text": text,
-                "norm": norm,
-                "count": 1,
-                "timestamp_first": evt["timestamp"],
-                "timestamp_last": evt["timestamp"],
-            })
-    for g in groups:
-        g.pop("norm", None)
-    return groups
+        txt = evt.get("text", "") or evt.get("msg", "") or evt.get("description", "")
+        if not txt:
+            continue
+        
+        # Truncar para ahorrar tokens y memoria
+        txt = txt[:500]
 
-def fetch_events(since_dt):
-    """Fetch events from MongoDB since a given datetime."""
-    query = {
-        "$or": [
-            {"timestamp": {"$gte": since_dt}},
-            {"timestamp": {"$gte": since_dt.isoformat()}},
+        fp = fingerprint(txt)
+        if not fp:
+            continue
+
+        if fp in seen:
+            seen[fp]["count"] += 1
+        else:
+            grupo = {
+                "sample_text": txt,
+                "count": 1
+            }
+            grupos.append(grupo)
+            seen[fp] = grupo
+
+    return grupos
+
+
+def read_events(minutes):
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    docs = col_events.find({"timestamp": {"$gte": cutoff.isoformat()}}).sort("timestamp", 1)
+
+    eventos = []
+    for d in docs:
+        ts = d.get("timestamp")
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+        d["timestamp"] = ts.isoformat()
+        d.pop("_id", None)
+        eventos.append(d)
+
+    return eventos
+
+
+def read_last_event():
+    """
+    Obtiene el último registro crudo de la colección general.
+    """
+    doc = col_events.find().sort("timestamp", -1).limit(1)
+    ultimo = next(doc, None)
+
+    if not ultimo:
+        return None
+
+    ts = ultimo.get("timestamp")
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+    if isinstance(ts, datetime):
+        ultimo["timestamp"] = ts.isoformat()
+
+    ultimo.pop("_id", None)
+    return ultimo
+
+
+def read_events_range(start, end):
+    docs = col_events.find({
+        "timestamp": {
+            "$gte": start.isoformat(),
+            "$lte": end.isoformat()
+        }
+    }).sort("timestamp", 1)
+
+    eventos = []
+    for d in docs:
+        ts = d.get("timestamp")
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+        d["timestamp"] = ts.isoformat()
+        d.pop("_id", None)
+        eventos.append(d)
+
+    return eventos
+
+
+def limpiar_para_alexa(texto):
+    if not texto:
+        return "Sin información."
+
+    texto = re.sub(r"\*\*(.*?)\*\*", r"\1", texto)
+    texto = re.sub(r"\*(.*?)\*", r"\1", texto)
+    texto = texto.replace("<", "").replace(">", "")
+    texto = texto.replace("&", " y ")
+    texto = texto.replace('"', "").replace("'", "")
+    texto = texto.replace("\n- ", ". ").replace("\n* ", ". ")
+    texto = texto.replace("\n1. ", ". ")
+    texto = re.sub(r"\n+", " ", texto)
+
+    return texto.strip()
+
+
+# =======================
+# CACHE
+# =======================
+
+def leer_cache(tipo):
+    return col_cache.find_one({"tipo": tipo})
+
+
+def guardar_cache(tipo, texto, events_hash):
+    col_cache.update_one(
+        {"tipo": tipo},
+        {
+            "$set": {
+                "tipo": tipo,
+                "texto": texto,
+                "events_hash": events_hash,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        },
+        upsert=True
+    )
+
+
+
+
+
+# =======================
+# LLM
+# =======================
+
+def analizar(eventos, modelo):
+    if not eventos:
+        return "No hubo eventos relevantes en este periodo."
+    
+    # Ordenar por importancia (count) y limitar a top 100 para no explotar el context window
+    # Asumimos que 'eventos' es una lista de grupos (dicts con 'count').
+    if len(eventos) > 0 and "count" in eventos[0]:
+        eventos.sort(key=lambda x: x["count"], reverse=True)
+        eventos = eventos[:100]
+    elif len(eventos) > 100:
+        # Fallback si no son grupos agrupados, crude slice
+        eventos = eventos[:100]
+
+    payload = {
+        "model": modelo,
+        "messages": [
+            {"role": "system", "content": PROMPT_ANALYSIS},
+            {"role": "user", "content": json.dumps(eventos, ensure_ascii=False)}
         ]
     }
     docs = col_events.find(query).sort("timestamp", 1)
@@ -138,51 +268,47 @@ def fetch_events(since_dt):
         events.append(doc)
     return events
 
-def analyze_with_llm(grouped_events):
-    if not grouped_events:
-        return {"score": 0, "text": "Sin eventos recientes."}
-
-    if not OPENAI_API_KEY:
-        return {"score": 0, "text": "Error: OPENAI_API_KEY no configurada."}
-
-    payload = {
-        "prompt": PROMPT_ANALYSIS,
-        "events": grouped_events
-    }
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    body = {
-        "model": OPENAI_MODEL,
-        "messages": [
-            {"role": "system", "content": "Eres Victoria, una IA de monitoreo. Responde JSON."},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
-        ],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"}
-    }
-
-    def _req():
-        return requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body, timeout=30)
+    print(f"\n🔵 [{modelo}] Victoria → OpenAI (Payload size: {len(json.dumps(eventos))})")
+    # print(json.dumps(payload, indent=2, ensure_ascii=False))  # Too verbose
 
     try:
         r = with_retries(_req)
         r.raise_for_status()
-        data = r.json()
-        content = data["choices"][0]["message"]["content"]
-        return json.loads(content)
+
+        # print("\n🟣 OpenAI RAW:")
+        # print(r.text[:500])
+
+        texto = r.json()["choices"][0]["message"]["content"]
+        return limpiar_para_alexa(texto)
+
     except Exception as e:
-        logger.error(f"LLM Error: {e}")
-        return {"score": 0, "text": f"Error analizando eventos: {str(e)}"}
+        log(f"❌ ERROR OPENAI: {e}")
+        return "Error procesando eventos."
 
 # ======================
 # WORKER LOGIC
 # ======================
 
-def process_block_cycle(duration_minutes, field_prefix, use_simple_key=False):
+# =======================
+# LOGICA DE RE-CÁLCULO
+# =======================
+
+def procesar_si_cambia(tipo, eventos, modelo):
+    # Usar sort_keys=True para garantizar hash determinista
+    events_hash = hash(json.dumps(eventos, ensure_ascii=False, sort_keys=True))
+    cache_prev = leer_cache(tipo)
+
+    log(f" {tipo.upper()} actualizado → recalculando con {modelo}...")
+    texto = analizar(eventos, modelo)
+    
+    log(f"📝 Resultado {tipo.upper()}: {texto}")
+    
+    guardar_cache(tipo, texto, events_hash)
+
+    log(f"🟢 {tipo.upper()} OK.")
+
+
+def procesar_actual_desde_general():
     """
     Generic logic to process a time block.
     timestamp_format: "HH" (if simple) or "HH:MM" (if detailed)
@@ -214,143 +340,90 @@ def process_block_cycle(duration_minutes, field_prefix, use_simple_key=False):
         # But we might want to show "active" even if empty.
         pass
 
-    # Group
-    grouped = group_similar_events(raw_events)
-    
-    # Analyze
-    analysis = analyze_with_llm(grouped)
-    
-    # Prepare Data
-    block_data = {
-        "text": analysis.get("text", ""),
-        "score": analysis.get("score", 0),
-        "events_count": len(raw_events),
-        "last_updated": now_utc.isoformat(),
-        "status": "active",
-        "events_detail": [
-            {
-                "time": g.get("timestamp_last"),
-                "text": g.get("sample_text"),
-                "count": g.get("count", 1)
-            }
-            for g in grouped
-        ]
-    }
-    
-    # Update DB
-    col_daily = db["victoria_daily_reports"]
-    update_ops = {
-        "$set": {
-            f"{field_prefix}.{block_key}": block_data,
-            "last_updated": now_utc.isoformat()
-        }
-    }
-    col_daily.update_one({"date": today_str}, update_ops, upsert=True)
-    logger.info(f"[{field_prefix}] Updated block {block_key} ({len(raw_events)} events)")
+    if not ultimo:
+        log("🔴 ACTUAL sin eventos en la colección general → Guardando estado vacío.")
+        texto = "No hay eventos registrados aún."
+        events_hash = "no_events"
 
-def run_calculation():
-    logger.info("--- Starting Calculation Cycle ---")
-    
-    # 1. Process Standard 3H Blocks (Legacy)
-    # 3 hours = 180 minutes
-    process_block_cycle(180, "blocks", use_simple_key=True)
-    
-    # 2. Process Detailed Blocks (Configurable)
-    # Only if different from 180 to avoid double work? 
-    # Or just always do it if user wants the detailed view.
-    if BLOCK_DURATION_MINUTES != 180:
-        process_block_cycle(BLOCK_DURATION_MINUTES, "blocks_detailed", use_simple_key=False)
+        cache_prev = leer_cache("actual")
 
-    # 6. Generate Daily Summary (New)
-    # Fetch the full document to see all blocks
-    daily_doc = col_daily.find_one({"date": today_str})
-    if daily_doc and "blocks" in daily_doc:
-        all_blocks = daily_doc["blocks"]
-        # collect texts from all existing blocks
-        daily_texts = []
-        total_score = 0
-        count_blocks = 0
-        
-        for _, b_val in all_blocks.items():
-            if b_val.get("text"):
-                daily_texts.append(b_val.get("text"))
-            total_score += b_val.get("score", 0)
-            count_blocks += 1
-            
-        combined_text = " ".join(daily_texts)
-        if combined_text:
-            # Simple aggregation or quick LLM summary of the summaries
-            daily_avg_score = total_score / max(1, count_blocks)
-            
-            # Request a high-level summary of the day so far
-            prompt_daily = f"""
-            Genera un resumen ejecutivo de un solo párrafo del estado de seguridad de todo el día, 
-            basado en estos reportes parciales:
-            {combined_text}
-            
-            Retorna JSON: {{"text": "<resumen>", "score": <0.0-1.0 promedio global>}}
-            Ignora el score calculado y usa tu criterio basado en los eventos.
-            """
-            
-            try:
-                # Reuse the analyze helper but with custom prompt payload?
-                # Actually, let's just do a quick request here or refactor analyze_llm to accept custom prompt.
-                # For speed, let's just refactor analyze_llm slightly or copy a minimal version.
-                # Attempting to re-use analyze_llm won't work easily as it expects a list of events.
-                # Let's do a direct call.
-                
-                if OPENAI_API_KEY:
-                    daily_payload = {
-                        "model": OPENAI_MODEL,
-                        "messages": [
-                            {"role": "system", "content": "Eres Victoria. Resumes seguridad diaria. JSON output."},
-                            {"role": "user", "content": prompt_daily}
-                        ],
-                        "temperature": 0.3,
-                        "response_format": {"type": "json_object"}
-                    }
-                    
-                    def _r_daily():
-                        return requests.post("https://api.openai.com/v1/chat/completions", 
-                                          headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-                                          json=daily_payload, timeout=30)
-                    
-                    try:
-                        rd = with_retries(_r_daily)
-                        if rd.status_code == 200:
-                            daily_res = json.loads(rd.json()["choices"][0]["message"]["content"])
-                            
-                            col_daily.update_one(
-                                {"date": today_str}, 
-                                {"$set": {
-                                    "daily_summary": daily_res.get("text", "Sin resumen"),
-                                    "daily_score": float(daily_res.get("score", daily_avg_score))
-                                }}
-                            )
-                            logger.info("Updated Daily Summary.")
-                    except Exception as e:
-                        logger.error(f"Failed to generate daily summary: {e}")
+        guardar_cache("actual", texto, events_hash)
 
-            except Exception as e:
-                logger.error(f"Daily summary logic error: {e}")
+        log("🟢 ACTUAL (vacío) OK.")
+        return
+
+    texto = ultimo.get("text") or ultimo.get("msg") or ultimo.get("mensaje") or ultimo.get("description")
+    if not texto:
+        texto = json.dumps(ultimo, ensure_ascii=False)
+
+    events_hash = hash(json.dumps(ultimo, ensure_ascii=False, default=str, sort_keys=True))
+    cache_prev = leer_cache("actual")
+
+    log("🟣 ACTUAL se toma del último registro en la colección general.")
+    texto_limpio = limpiar_para_alexa(texto)
+    
+    log(f"📝 Resultado ACTUAL: {texto_limpio}")
+
+    guardar_cache("actual", texto_limpio, events_hash)
+
+    log("🟢 ACTUAL OK.")
+
+
+def read_last_n_events(n):
+    # Obtener los últimos N eventos (orden descendente primero)
+    docs = col_events.find().sort("timestamp", -1).limit(n)
+
+    eventos = []
+    for d in docs:
+        ts = d.get("timestamp")
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+        d["timestamp"] = ts.isoformat()
+        d.pop("_id", None)
+        eventos.append(d)
+
+    # Revertir a orden cronológico para el análisis
+    # (aunque group_similar no le importa, es mejor ser consistentes)
+    eventos.reverse()
+    return eventos
+
+
+# =======================
+# MAIN LOOP
+# =======================
 
 def main():
-    logger.info(f"Starting Victoria Brain Worker (Model: {OPENAI_MODEL}, Interval: {CHECK_INTERVAL}s)")
-    
-    # Validate keys
-    if not OPENAI_API_KEY:
-        logger.warning("⚠️ OPENAI_API_KEY is missing! Analysis will fail.")
+    log("🔥 Victoria PreCalculator ULTRA ONLINE (cada 5 minutos)")
 
     while True:
         try:
-            run_calculation()
+            print("\n=========================")
+            log("🔄 Ejecutando ciclo ULTRA")
+            print("=========================")
+
+            # 1) Actual (5 min)
+            procesar_actual_desde_general()
+
+            # 2) Tres horas -> Ahora "Short Term" (últimos 200 eventos)
+            ev_tres = read_last_n_events(200)
+            log(f"🔎 TRES (Last 200): Encontrados {len(ev_tres)} eventos.")
+            procesar_si_cambia("tres", group_similar(ev_tres), MODEL_TRES)
+
+            # 3) Día -> Ahora "Long Term" (últimos 1000 eventos)
+            ev_dia = read_last_n_events(1000)
+            log(f"🔎 DIA (Last 1000): Encontrados {len(ev_dia)} eventos.")
+            procesar_si_cambia("dia", group_similar(ev_dia), MODEL_DIA)
+
+            # 4) Ayer -> DISABLED per user request
+            # (Logic removed)
+
         except Exception as e:
-            logger.error(f"Error during calculation cycle: {e}")
-            # If DB connection drops, maybe we should exit or re-init?
-            # For now just sleep and retry.
-        
-        logger.info(f"Sleeping for {CHECK_INTERVAL} seconds...")
-        time.sleep(CHECK_INTERVAL)
+            log(f"❌ ERROR GENERAL: {e}")
+
+        log("⏳ Durmiendo 5 minutos...\n")
+        time.sleep(600)
+
 
 if __name__ == "__main__":
     main()
