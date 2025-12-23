@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Victoria Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <style>
+      :root {
+        --bg: #0f172a;
+        --card: #0b1222;
+        --muted: #94a3b8;
+        --accent: #22c55e;
+        --warn: #f59e0b;
+        --err: #ef4444;
+        --text: #e2e8f0;
+        --border: #1f2937;
+        --current-bg: rgba(34, 197, 94, 0.1);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: Inter, system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        padding: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      label {
+        font-size: 13px;
+        color: var(--muted);
+        margin-right: 8px;
+      }
+      input,
+      button,
+      select {
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: #0b1426;
+        color: var(--text);
+        font-family: inherit;
+      }
+      button {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button.primary {
+        background: var(--accent);
+        border: none;
+        color: #022c22;
+      }
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 8px;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        text-transform: uppercase;
+        font-size: 12px;
+        text-align: left;
+      }
+      .error {
+        color: var(--err);
+      }
+      .ok {
+        color: var(--accent);
+      }
+      .loading {
+        opacity: 0.6;
+      }
+      tr.current-block {
+        background: var(--current-bg);
+      }
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>Victoria Dashboard</h1>
+    <p>Reporte Diario de Bloques (3h)</p>
+
+    <div class="card">
+      <div class="controls">
+        <label>Fecha:</label>
+        <input id="date" type="date" />
+        <select id="granularity" onchange="loadAll()">
+            <option value="3h" selected>Vista: 3 Horas</option>
+            <option value="detailed">Vista: Detallada (10m)</option>
+        </select>
+        <button class="primary" onclick="loadAll()">⟳ Refresh</button>
+        <span id="status"></span>
+      </div>
+    </div>
+
+    <!-- New Daily Summary Section -->
+    <div
+      class="card"
+      id="daily-summary-card"
+      style="border-left: 4px solid var(--accent)"
+    >
+      <h3>
+        Resumen del Día
+        <span
+          id="daily-score"
+          style="font-size: 0.8em; opacity: 0.8; margin-left: 10px"
+        ></span>
+      </h3>
+      <p
+        id="daily-text"
+        style="color: var(--text); font-size: 1.1em; line-height: 1.5"
+      >
+        Cargando resumen...
+      </p>
+    </div>
+
+    <div class="card">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Bloque</th>
+            <th>Contenido</th>
+            <th style="width: 80px">Hash</th>
+          </tr>
+        </thead>
+        <tbody id="blocks">
+          <tr>
+            <td colspan="3">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <script>
+      const DEFAULT_APIKEY = "aOhSfdBLPFEXC2HJlXPpT8AQ5wKVc";
+      const BASE_URL = "http://localhost:8888";
+
+      // Init date to today
+      const today = new Date().toISOString().split("T")[0];
+      document.getElementById("date").value = today;
+
+      async function api(path) {
+        const key = DEFAULT_APIKEY;
+        const res = await fetch(
+          BASE_URL +
+            path +
+            (path.includes("?") ? "&" : "?") +
+            "apikey=" +
+            encodeURIComponent(key)
+        );
+        if (!res.ok) throw new Error(res.status);
+        return res.json();
+      }
+
+      async function loadAll() {
+        const status = document.getElementById("status");
+        status.textContent = "cargando...";
+        status.className = "loading";
+
+        try {
+          const d = document.getElementById("date").value || today;
+          const g = document.getElementById("granularity").value || "3h";
+
+          // Fetch unified blocks (history + current if today)
+          const data = await api("/report/blocks/3h?date=" + d + "&granularity=" + g);
+
+          // Update Daily Summary
+          document.getElementById("daily-text").textContent =
+            data.daily_summary || "Sin resumen disponible.";
+          const scoreVal = parseFloat(data.daily_score || 0).toFixed(2);
+          document.getElementById(
+            "daily-score"
+          ).textContent = `(Riesgo Global: ${scoreVal})`;
+
+          // Colorize daily score
+          const dsEl = document.getElementById("daily-summary-card");
+          if (scoreVal > 0.7) dsEl.style.borderLeftColor = "var(--err)";
+          else if (scoreVal > 0.4) dsEl.style.borderLeftColor = "var(--warn)";
+          else dsEl.style.borderLeftColor = "var(--accent)";
+
+          const tbody = document.getElementById("blocks");
+          if (!data.items || !data.items.length) {
+            tbody.innerHTML =
+              "<tr><td colspan='3' style='text-align:center;padding:20px;color:var(--muted)'>Sin datos para esta fecha</td></tr>";
+          } else {
+            tbody.innerHTML = data.items
+              .map((b) => {
+                const rowClass = b.is_current ? "current-block" : "";
+                const label = b.is_current
+                  ? "⚡ ACTIVO"
+                  : formatBlockTime(b.block);
+
+                let detailsHtml = "";
+                if (b.events_detail && b.events_detail.length > 0) {
+                  detailsHtml = `
+            <div id="details-${
+              b.block
+            }" style="display:none; margin-top:5px; padding:5px; background:rgba(255,255,255,0.05); border-radius:4px; font-size:12px;">
+                <strong>Eventos Crudos:</strong>
+                <ul style="margin:5px 0 0 15px; padding:0;">
+                    ${b.events_detail
+                      .map(
+                        (e) =>
+                          `<li>[${new Date(e.time).toLocaleTimeString()}] ${
+                            e.text
+                          } (x${e.count})</li>`
+                      )
+                      .join("")}
+                </ul>
+            </div>
+            `;
+                }
+
+                return `
+        <tr class="${rowClass}">
+          <td style="white-space:nowrap;font-weight:${
+            b.is_current ? "bold" : "normal"
+          }">
+            ${label}
+          </td>
+          <td>
+            ${b.texto}
+            ${
+              b.events_detail && b.events_detail.length > 0
+                ? `<br><a href="#" onclick="toggleDetails('${b.block}'); return false;" style="font-size:11px; color:var(--primary)">Ver detalles (${b.events_detail.length})</a>`
+                : ""
+            }
+            ${detailsHtml}
+          </td>
+          <td style="font-family:monospace;font-size:11px;color:var(--muted)">${
+            b.events_detail ? b.events_detail.length + " groups" : b.events_hash
+          }</td>
+        </tr>
+      `;
+              })
+              .join("");
+          }
+
+          status.textContent =
+            "Actualizado: " + new Date().toLocaleTimeString();
+          status.className = "ok";
+        } catch (e) {
+          status.textContent = "Error: " + e.message;
+          status.className = "error";
+        }
+      }
+
+      function formatBlockTime(isoStr) {
+        // Expected format: YYYY-MM-DDTHH:00:00+00:00 or similar
+        try {
+          // remove any extra text if present
+          const clean = isoStr.split(" ")[0];
+          const date = new Date(clean);
+          // Display in local time or UTC? The user seems to work in UTC based on python code,
+          // but dashboard often useful in local. Let's keep it simple: Show HH:00
+          // But wait, the python code constructs string with +00:00.
+          // Let's just substring the HH:00 part for simplicity or show as is.
+          // Actually, let's parse it to ensure we show something readable.
+          return clean.substring(11, 16) + " UTC";
+        } catch (e) {
+          return isoStr;
+        }
+      }
+
+      // Initial load
+      loadAll();
+
+      // Auto-refresh every 60s
+      setInterval(loadAll, 60000);
+
+      // Refresh on date change
+      document.getElementById("date").addEventListener("change", loadAll);
+
+      function toggleDetails(id) {
+        const el = document.getElementById("details-" + id);
+        if (el)
+          el.style.display = el.style.display === "none" ? "block" : "none";
+      }
+    </script>
+  </body>
+</html>
