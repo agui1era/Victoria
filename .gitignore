@@ -211,3 +211,23 @@ myenv/bin/activate.csh
 myenv/bin/flask
 myenv/bin/normalizer
 myenv/bin/pip
+myenv/bin/activate
+myenv/bin/activate
+myenv/bin/activate.csh
+myenv/bin/activate.fish
+myenv/bin/dotenv
+myenv/bin/pip3.10
+myenv/bin/python3.10 2
+myenv/bin/pip3
+myenv/bin/python3 2
+myenv/bin/activate
+myenv/bin/python 2
+myenv/bin/pip3.10
+myenv/bin/pip3
+myenv/bin/pip
+myenv/bin/normalizer
+myenv/bin/flask
+myenv/bin/dotenv
+myenv/bin/activate.fish
+myenv/bin/activate.csh
+myenv/bin/activate
