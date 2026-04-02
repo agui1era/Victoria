@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+myenv/bin/dotenv
+myenv/bin/activate
+myenv/bin/activate.csh
+myenv/bin/flask
+myenv/bin/normalizer
+myenv/bin/pip
