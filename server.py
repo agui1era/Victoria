@@ -2,28 +2,40 @@ from flask import Flask, request
 from flask_cors import CORS
 from pymongo import MongoClient
 import os
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 app = Flask(__name__)
 
 # ===== CONFIG =====
-# ===== CONFIG =====
 MONGO_URI = os.getenv("MONGO_URI")
 MONGO_DB_CACHE = os.getenv("MONGO_DB_CACHE", "victoria")
 CACHE_COLL = "victoria_cache"
+MONGO_DB_EVENTS = os.getenv("MONGO_DB_EVENTS", "omnistatus")
+EVENTS_COLL = os.getenv("MONGO_COLL_NAME", "events")
 APIKEY = os.getenv("VICTORIA_APIKEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 mongo = MongoClient(MONGO_URI)
 col_cache = mongo[MONGO_DB_CACHE][CACHE_COLL]
+daily_col = col_cache # Fallback for backwards compatibility with report_blocks_3h
+col_events = mongo[MONGO_DB_EVENTS][EVENTS_COLL]
+
+import openai
+if OPENAI_API_KEY:
+    client = openai.OpenAI(api_key=OPENAI_API_KEY)
+else:
+    client = None
 
 # ======================
 # HELPERS
 # ======================
 
 def is_apikey_valid(req) -> bool:
-    return req.args.get("apikey") == API_KEY
+    return req.args.get("apikey") == APIKEY
 
 def sanitize(text: str) -> str:
     if not text:
@@ -89,6 +101,59 @@ def report_blocks_3h():
         "daily_score": doc.get("daily_score", 0.0),
         "items": items
     }
+
+# ======================
+# LLM ON-DEMAND API
+# ======================
+@app.post("/analyze/on-demand")
+def analyze_on_demand():
+    if not is_apikey_valid(request):
+        return {"error": "Invalid apikey"}, 403
+
+    data = request.get_json() or {}
+    minutes = int(data.get("minutes", 60))
+    # Option to use the base prompt and concatenate, or override completely
+    base_prompt = os.getenv("PROMPT_ANALYSIS", "Eres un analista de eventos; identifica hechos relevantes y genera un resumen muy breve, directo y sin explicaciones extensas.")
+    custom_prompt = data.get("prompt", base_prompt)
+
+    if not client:
+         return {"error": "OpenAI API Key is missing or invalid in server."}, 500
+
+    # Read events from last N minutes
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    
+    docs = col_events.find({"timestamp": {"$gte": cutoff}}).sort("timestamp", 1)
+    
+    events = []
+    for d in docs:
+        d.pop("_id", None)
+        if "timestamp" in d and hasattr(d["timestamp"], "isoformat"):
+            d["timestamp"] = d["timestamp"].isoformat()
+        events.append(d)
+        
+    if not events:
+        return {"result": "No hay eventos registrados en este rango de tiempo.", "events_count": 0}
+        
+    # Limit events to avoid context window explosion
+    if len(events) > 100:
+        events = events[-100:]
+        
+    try:
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": custom_prompt},
+                {"role": "user", "content": f"Eventos:\n{json.dumps(events, ensure_ascii=False)}"}
+            ]
+        )
+        texto = response.choices[0].message.content
+        return {
+            "minutes": minutes,
+            "events_count": len(events),
+            "result": sanitize(texto)
+        }
+    except Exception as e:
+        return {"error": str(e)}, 500
 
 # ======================
 # MAIN

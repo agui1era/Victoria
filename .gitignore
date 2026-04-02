@@ -231,3 +231,4 @@ myenv/bin/dotenv
 myenv/bin/activate.fish
 myenv/bin/activate.csh
 myenv/bin/activate
+myenv/bin/activate
